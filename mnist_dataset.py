@@ -183,6 +183,10 @@ G4 = DCGenerator()
 D4 = DCDiscriminator()
 opt_g = optim.Adam(G4.parameters(), lr=2e-4, betas=(0.5, 0.999))
 opt_d = optim.Adam(D4.parameters(), lr=2e-4, betas=(0.5, 0.999))
+G_basic = nn.Sequential(nn.Linear(z_dim, 256), nn.ReLU(), nn.Linear(256, 1024), nn.Tanh())
+D_basic = nn.Sequential(nn.Linear(1024, 256), nn.LeakyReLU(0.2), nn.Linear(256, 1), nn.Sigmoid())
+opt_gb = optim.Adam(G_basic.parameters(), lr=2e-4)
+opt_db = optim.Adam(D_basic.parameters(), lr=2e-4)
 criterion = nn.BCELoss()
 epochs = 5
 
@@ -205,19 +209,31 @@ for epoch in range(epochs):
         loss_g = criterion(D4(fake), ones)
         loss_g.backward()
         opt_g.step()
+
+        real_flat = real.view(bs, -1)
+        opt_db.zero_grad()
+        fake_b = G_basic(z)
+        loss_db = criterion(D_basic(real_flat), ones) + criterion(D_basic(fake_b.detach()), zeros)
+        loss_db.backward()
+        opt_db.step()
+
+        opt_gb.zero_grad()
+        loss_gb = criterion(D_basic(fake_b), ones)
+        loss_gb.backward()
+        opt_gb.step()
     print(f"DCGAN Epoch {epoch+1}/{epochs} | D: {loss_d.item():.4f} | G: {loss_g.item():.4f}")
 
-G3.eval()
+G_basic.eval()
 G4.eval()
 with torch.no_grad():
-    vanilla_samples = G3(torch.randn(8, 64)).view(-1, 1, 28, 28).numpy()
-    dc_samples = G4(torch.randn(8, 64)).numpy()
+    vanilla_samples = G_basic(torch.randn(8, z_dim)).view(-1, 32, 32).numpy()
+    dc_samples = G4(torch.randn(8, z_dim)).squeeze().numpy()
 
 fig, axes = plt.subplots(2, 8, figsize=(12, 3))
 for i in range(8):
-    axes[0, i].imshow(vanilla_samples[i, 0], cmap='gray')
+    axes[0, i].imshow(vanilla_samples[i], cmap='gray')
     axes[0, i].axis('off')
-    axes[1, i].imshow(dc_samples[i, 0], cmap='gray')
+    axes[1, i].imshow(dc_samples[i], cmap='gray')
     axes[1, i].axis('off')
 axes[0, 0].set_ylabel('Vanilla')
 axes[1, 0].set_ylabel('DCGAN')
