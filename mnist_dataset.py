@@ -49,21 +49,21 @@ z_dim = 64
 class VanillaG(nn.Module):
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(z_dim, 256), nn.ReLU(), nn.Linear(256, 784), nn.Tanh())
+        self.net = nn.Sequential(nn.Linear(z_dim, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Linear(256, 784), nn.Tanh())
     def forward(self, x):
         return self.net(x)
 
 class VanillaD(nn.Module):
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(784, 256), nn.LeakyReLU(0.2), nn.Linear(256, 1), nn.Sigmoid())
+        self.net = nn.Sequential(nn.Linear(784, 256), nn.LeakyReLU(0.2), nn.Dropout(0.3), nn.Linear(256, 1), nn.Sigmoid())
     def forward(self, x):
         return self.net(x)
 
 G3 = VanillaG()
 D3 = VanillaD()
-opt_g = optim.Adam(G3.parameters(), lr=2e-4)
-opt_d = optim.Adam(D3.parameters(), lr=2e-4)
+opt_g = optim.Adam(G3.parameters(), lr=2e-4, betas=(0.5, 0.999))
+opt_d = optim.Adam(D3.parameters(), lr=2e-4, betas=(0.5, 0.999))
 criterion = nn.BCELoss()
 
 g_losses, d_losses = [], []
@@ -74,7 +74,7 @@ for epoch in range(epochs):
     for real, _ in loader:
         bs = real.size(0)
         real_flat = real.view(bs, -1)
-        ones = torch.ones(bs, 1)
+        ones = torch.full((bs, 1), 0.9)
         zeros = torch.zeros(bs, 1)
 
         opt_d.zero_grad()
@@ -88,15 +88,17 @@ for epoch in range(epochs):
 
         opt_g.zero_grad()
         d_fake2 = D3(fake)
-        loss_g = criterion(d_fake2, ones)
+        loss_g = criterion(d_fake2, torch.ones(bs, 1))
         loss_g.backward()
         opt_g.step()
 
     g_losses.append(loss_g.item())
     d_losses.append(loss_d.item())
+    G3.eval()
     with torch.no_grad():
         sample = G3(torch.randn(16, z_dim)).view(-1, 1, 28, 28)
         sample_images.append(sample)
+    G3.train()
     print(f"Epoch {epoch+1}/{epochs} | D Loss: {loss_d.item():.4f} | G Loss: {loss_g.item():.4f}")
 
 plt.figure()
@@ -120,6 +122,7 @@ def prep_for_metrics(imgs):
     imgs = torch.nn.functional.interpolate(imgs, size=(299, 299))
     return ((imgs + 1) * 127.5).clamp(0, 255).to(torch.uint8)
 
+G3.eval()
 with torch.no_grad():
     real_batch = torch.stack([mnist[i][0] for i in range(100)])
     fake_batch = G3(torch.randn(100, z_dim)).view(-1, 1, 28, 28)
@@ -204,6 +207,8 @@ for epoch in range(epochs):
         opt_g.step()
     print(f"DCGAN Epoch {epoch+1}/{epochs} | D: {loss_d.item():.4f} | G: {loss_g.item():.4f}")
 
+G3.eval()
+G4.eval()
 with torch.no_grad():
     vanilla_samples = G3(torch.randn(8, 64)).view(-1, 1, 28, 28).numpy()
     dc_samples = G4(torch.randn(8, 64)).numpy()
@@ -234,13 +239,13 @@ transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5
 mnist = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
 loader = DataLoader(mnist, batch_size=128, shuffle=True)
 
-z_dim, n_classes = 64, 10
+z_dim, n_classes, emb_dim = 64, 10, 32
 
 class CGenerator(nn.Module):
     def __init__(self):
         super().__init__()
-        self.label_emb = nn.Embedding(n_classes, n_classes)
-        self.net = nn.Sequential(nn.Linear(z_dim + n_classes, 256), nn.ReLU(), nn.Linear(256, 784), nn.Tanh())
+        self.label_emb = nn.Embedding(n_classes, emb_dim)
+        self.net = nn.Sequential(nn.Linear(z_dim + emb_dim, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Linear(256, 784), nn.Tanh())
     def forward(self, z, labels):
         x = torch.cat([z, self.label_emb(labels)], dim=1)
         return self.net(x)
@@ -248,16 +253,16 @@ class CGenerator(nn.Module):
 class CDiscriminator(nn.Module):
     def __init__(self):
         super().__init__()
-        self.label_emb = nn.Embedding(n_classes, n_classes)
-        self.net = nn.Sequential(nn.Linear(784 + n_classes, 256), nn.LeakyReLU(0.2), nn.Linear(256, 1), nn.Sigmoid())
+        self.label_emb = nn.Embedding(n_classes, emb_dim)
+        self.net = nn.Sequential(nn.Linear(784 + emb_dim, 256), nn.LeakyReLU(0.2), nn.Dropout(0.3), nn.Linear(256, 1), nn.Sigmoid())
     def forward(self, x, labels):
         x = torch.cat([x, self.label_emb(labels)], dim=1)
         return self.net(x)
 
 G5 = CGenerator()
 D5 = CDiscriminator()
-opt_g = optim.Adam(G5.parameters(), lr=2e-4)
-opt_d = optim.Adam(D5.parameters(), lr=2e-4)
+opt_g = optim.Adam(G5.parameters(), lr=2e-4, betas=(0.5, 0.999))
+opt_d = optim.Adam(D5.parameters(), lr=2e-4, betas=(0.5, 0.999))
 criterion = nn.BCELoss()
 epochs = 5
 
@@ -265,7 +270,7 @@ for epoch in range(epochs):
     for real, labels in loader:
         bs = real.size(0)
         real_flat = real.view(bs, -1)
-        ones = torch.ones(bs, 1)
+        ones = torch.full((bs, 1), 0.9)
         zeros = torch.zeros(bs, 1)
 
         opt_d.zero_grad()
@@ -276,17 +281,18 @@ for epoch in range(epochs):
         opt_d.step()
 
         opt_g.zero_grad()
-        loss_g = criterion(D5(fake, labels), ones)
+        loss_g = criterion(D5(fake, labels), torch.ones(bs, 1))
         loss_g.backward()
         opt_g.step()
     print(f"CGAN Epoch {epoch+1}/{epochs} | D: {loss_d.item():.4f} | G: {loss_g.item():.4f}")
 
 fig, axes = plt.subplots(2, 5, figsize=(10, 4))
+G5.eval()
 with torch.no_grad():
+    imgs = G5(torch.randn(10, z_dim), torch.arange(10)).view(10, 28, 28).numpy()
     for digit in range(10):
-        img = G5(torch.randn(1, z_dim), torch.tensor([digit])).view(28, 28).numpy()
         ax = axes[digit // 5, digit % 5]
-        ax.imshow(img, cmap='gray')
+        ax.imshow(imgs[digit], cmap='gray')
         ax.set_title(f'{digit}')
         ax.axis('off')
 plt.suptitle('CGAN - Conditional Generation (digits 0-9)')
