@@ -313,3 +313,168 @@ with torch.no_grad():
         ax.axis('off')
 plt.suptitle('CGAN - Conditional Generation (digits 0-9)')
 plt.show()
+
+
+# //7 style gan
+import torch, torch.nn as nn, numpy as np, matplotlib.pyplot as plt
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class MiniStyleGAN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mapping = nn.Sequential(nn.Linear(32, 32), nn.LeakyReLU(0.2), nn.Linear(32, 32))
+        self.const = nn.Parameter(torch.randn(1, 32, 4, 4))
+        self.conv1 = nn.Conv2d(32, 32, 3, padding=1)
+        self.mod1 = nn.Linear(32, 32*2)
+        self.up = nn.Upsample(scale_factor=4, mode='bilinear')
+        self.to_img = nn.Sequential(nn.Conv2d(32, 1, 3, padding=1), nn.Tanh())
+
+    def forward_w(self, w):
+        b = w.size(0)
+        x = self.conv1(self.const.repeat(b, 1, 1, 1))
+        # AdaIN
+        s = self.mod1(w).unsqueeze(-1).unsqueeze(-1)
+        gamma, beta = s[:, :32], s[:, 32:]
+        x = (x - x.mean((2, 3), keepdim=True)) / (x.std((2, 3), keepdim=True) + 1e-5) * (gamma +
+1.0) + beta
+        return self.to_img(self.up(x))
+
+model = MiniStyleGAN().to(device)
+
+with torch.no_grad():
+
+    w1 = model.mapping(torch.randn(1, 32, device=device))
+    w2 = model.mapping(torch.randn(1, 32, device=device))
+    steps = 8
+    alphas = torch.linspace(0, 1, steps, device=device).unsqueeze(1)
+    w_interp = (1 - alphas) * w1 + alphas * w2
+    images = model.forward_w(w_interp).cpu()
+
+fig, axes = plt.subplots(1, steps, figsize=(14, 2))
+for i, ax in enumerate(axes):
+    ax.imshow(images[i].squeeze(), cmap='gray')
+    ax.set_title(f"t={i/(steps-1):.2f}")
+    ax.axis('off')
+plt.suptitle("StyleGAN Latent Interpolation Strip")
+plt.show()
+print("StyleGAN completed successfully!")
+
+
+# cycle gan
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+class G(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 8, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(8, 1, 3, padding=1), nn.Tanh()
+        )
+    def forward(self, x):
+        return self.net(x)
+
+G_AB, G_BA = G().to(device), G().to(device)
+D_A = nn.Sequential(nn.Conv2d(1, 8, 4, 2, 1), nn.LeakyReLU(0.2),
+                    nn.Flatten(), nn.Linear(8*14*14, 1), nn.Sigmoid()).to(device)
+D_B = nn.Sequential(nn.Conv2d(1, 8, 4, 2, 1), nn.LeakyReLU(0.2),
+                    nn.Flatten(), nn.Linear(8*14*14, 1), nn.Sigmoid()).to(device)
+
+opt_G = torch.optim.Adam(list(G_AB.parameters()) + list(G_BA.parameters()), lr=0.001)
+opt_D = torch.optim.Adam(list(D_A.parameters()) + list(D_B.parameters()), lr=0.001)
+bce, l1 = nn.BCELoss(), nn.L1Loss()
+
+# Create two simple image domains
+A = torch.zeros(16, 1, 28, 28, device=device)
+A[:, :, 7:21, 7:21] = 1
+B = 1 - A
+
+
+for epoch in range(50):
+    fake_B = G_AB(A)
+    fake_A = G_BA(B)
+    rec_A, rec_B = G_BA(fake_B), G_AB(fake_A)
+
+    opt_G.zero_grad()
+    loss_G = (bce(D_B(fake_B), torch.ones(16, 1, device=device)) +
+              bce(D_A(fake_A), torch.ones(16, 1, device=device)) +
+              10 * (l1(rec_A, A) + l1(rec_B, B)))
+    loss_G.backward()
+    opt_G.step()
+
+    opt_D.zero_grad()
+    loss_D = (bce(D_A(A), torch.ones(16, 1, device=device)) +
+              bce(D_A(fake_A.detach()), torch.zeros(16, 1, device=device)) +
+              bce(D_B(B), torch.ones(16, 1, device=device)) +
+              bce(D_B(fake_B.detach()), torch.zeros(16, 1, device=device)))
+    loss_D.backward()
+    opt_D.step()
+
+with torch.no_grad():
+    translated = G_AB(A[:1])
+    reconstructed = G_BA(translated)
+
+plt.figure(figsize=(8, 3))
+for i, img in enumerate([A[0], translated[0], reconstructed[0]]):
+    plt.subplot(1, 3, i+1)
+    plt.imshow(img.squeeze().cpu(), cmap="gray")
+    plt.axis("off")
+plt.suptitle("Source A | Translated B | Reconstructed A")
+plt.show()
+
+print("Generator loss:", round(loss_G.item(), 4))
+print("Discriminator loss:", round(loss_D.item(), 4))
+
+
+# super resolution dataset
+import torch, torch.nn as nn, torch.nn.functional as F, numpy as np, matplotlib.pyplot as plt
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# 1. SRGAN Model
+class SRNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1), nn.PReLU(),
+            nn.Conv2d(32, 32*4, 3, padding=1), nn.PixelShuffle(2), nn.PReLU(),
+            nn.Conv2d(32, 1, 3, padding=1), nn.Sigmoid()
+        )
+
+    def forward(self, x): return self.net(x)
+
+model = SRNet().to(device)
+opt = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# 2. Data (14x14 Low-Res -> 28x28 High-Res)
+hr_data = torch.randn(200, 1, 28, 28).clamp(0, 1).to(device)
+lr_data = F.interpolate(hr_data, size=(14, 14), mode='bicubic').clamp(0, 1)
+
+# 3. Fast Train (40 steps)
+for step in range(40):
+    opt.zero_grad()
+    loss = F.mse_loss(model(lr_data), hr_data)
+    loss.backward(); opt.step()
+
+# 4. Evaluate PSNR & Visuals
+with torch.no_grad():
+    sr_out = model(lr_data[:1]).cpu().numpy()
+    bicubic = F.interpolate(lr_data[:1], size=(28, 28), mode='bicubic').cpu().numpy()
+    real_hr = hr_data[:1].cpu().numpy()
+
+def psnr(a, b): return 20 * np.log10(1.0 / np.sqrt(np.mean((a - b)**2)))
+
+fig, axes = plt.subplots(1, 4, figsize=(10, 2.5))
+axes[0].imshow(lr_data[0].squeeze().cpu(), cmap='gray'); axes[0].set_title("Low-Res (14x14)");
+axes[0].axis('off')
+axes[1].imshow(bicubic[0].squeeze(), cmap='gray'); axes[1].set_title(f"Bicubic ({psnr(bicubic,
+real_hr):.1f}dB)"); axes[1].axis('off')
+axes[2].imshow(sr_out[0].squeeze(), cmap='gray'); axes[2].set_title(f"SRGAN ({psnr(sr_out,
+real_hr):.1f}dB)"); axes[2].axis('off')
+axes[3].imshow(real_hr[0].squeeze(), cmap='gray'); axes[3].set_title("Target HR");
+axes[3].axis('off')
+plt.suptitle("Super-Resolution Fast Pipeline")
+plt.show()
+print("SRGAN completed successfully!")
