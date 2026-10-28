@@ -106,7 +106,7 @@ plt.legend()
 plt.title('Vanilla GAN Losses')
 plt.show()
 
-fig, axes = plt.subplots(1, epochs)
+fig, axes = plt.subplots(epochs, 1, figsize=(8,15))
 for i, imgs in enumerate(sample_images):
     row = np.concatenate(imgs[:8].squeeze().numpy(), axis=1)
     axes[i].imshow(row, cmap='gray')
